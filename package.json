@@ -64,7 +64,7 @@
     "express": "^4.15.3",
     "fp-ts": "^2.11.1",
     "io-ts": "^2.2.16",
-    "node-fetch": "^2.6.1",
+    "node-fetch": "^2.6.7",
     "redis": "^3.0.2",
     "redis-clustr": "^1.7.0",
     "winston": "^3.2.1"
