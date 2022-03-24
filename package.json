@@ -11,6 +11,7 @@
     "build": "tsc",
     "watch": "tsc -w",
     "extensions:install": "func extensions install",
+    "worker": "dotenv -e .env node dist/temporal/index.js",
     "start": "dotenv -e .env func start --javascript",
     "predev": "npm-run-all generate build",
     "dev": "npm-run-all --parallel start watch",
@@ -57,6 +58,8 @@
     "@pagopa/express-azure-functions": "^2.0.0",
     "@pagopa/io-functions-commons": "^21.0.1",
     "@pagopa/ts-commons": "^10.0.1",
+    "@temporalio/worker": "^0.19.1",
+    "@temporalio/workflow": "^0.19.0",
     "applicationinsights": "^1.8.10",
     "azure-storage": "^2.10.3",
     "date-fns": "^2.16.1",
@@ -67,6 +70,7 @@
     "node-fetch": "^2.6.1",
     "redis": "^3.0.2",
     "redis-clustr": "^1.7.0",
+    "temporalio": "^0.19.1",
     "winston": "^3.2.1"
   },
   "resolutions": {
