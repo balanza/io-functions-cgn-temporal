@@ -2,21 +2,19 @@
 import * as t from "io-ts";
 import * as E from "fp-ts/lib/Either";
 import * as TE from "fp-ts/lib/TaskEither";
-import { pipe } from "fp-ts/lib/function";
+import { pipe, identity } from 'fp-ts/lib/function';
 import { NonNegativeInteger } from "@pagopa/ts-commons/lib/numbers";
 import { FiscalCode } from "@pagopa/ts-commons/lib/strings";
 import { readableReport } from "@pagopa/ts-commons/lib/reporters";
-import { proxyActivities } from "@temporalio/workflow";
-import { consumeCompletion } from "@temporalio/workflow/lib/internals";
-import { identity } from "lodash";
-import { te } from "date-fns/locale";
+import * as workflow from "@temporalio/workflow";
 import { Card } from "../generated/definitions/Card";
 
 // eslint-disable-next-line prettier/prettier
 import type * as activities from '../temporal/activities'; 
-import { ActivityResultFailure, ActivityResultSuccess } from "../utils/activity";
-import { CardActivated, StatusEnum as ActivatedStatusEnum } from "../generated/definitions/CardActivated";
-import { getErrorMessage } from "../utils/messages";
+import { ActivityResultFailure, ActivityResultSuccess} from '../utils/activity';
+import { StatusEnum as ActivatedStatusEnum } from "../generated/definitions/CardActivated";
+import { getErrorMessage, getMessage } from "../utils/messages";
+import { assertNever } from '../utils/types';
 
 export const OrchestratorInput = t.interface({
   fiscalCode: FiscalCode,
@@ -24,7 +22,7 @@ export const OrchestratorInput = t.interface({
 });
 export type OrchestratorInput = t.TypeOf<typeof OrchestratorInput>;
 
-const { UpdateCgnStatusActivity, StoreCgnExpirationActivity, SendMessageActivity } = proxyActivities<typeof activities>({
+const { UpdateCgnStatusActivity, StoreCgnExpirationActivity, SendMessageActivity } = workflow.proxyActivities<typeof activities>({
   
   startToCloseTimeout: "1 minute",
   retry: {
@@ -38,12 +36,15 @@ const toActivityFailure = (err: unknown): ActivityResultFailure => ActivityResul
 
 const doNothing = void 0;
 
+export const unblockSignal = workflow.defineSignal('unblock');
+
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 export async function UpdateCgnOrchestrator(
   input: OrchestratorInput,
   _eycaUpperBoundAge: NonNegativeInteger
 ): Promise<ActivityResultFailure | ActivityResultSuccess> {
-
+  let isBlocked = true;
+  workflow.setHandler(unblockSignal, () => void (isBlocked = false));
   const p = pipe(
     input,
     OrchestratorInput.decode,
@@ -80,7 +81,7 @@ export async function UpdateCgnOrchestrator(
           if (newStatusCard.status === ActivatedStatusEnum.ACTIVATED){
             // TODO: callUpsertSpecialServiceActivity
           }
-          return TE.right(doNothing);
+          return TE.right(ActivityResultSuccess.encode({kind: "SUCCESS"}));
         }),
     
         // eslint-disable-next-line sonarjs/no-identical-functions
@@ -88,29 +89,42 @@ export async function UpdateCgnOrchestrator(
           if (newStatusCard.status === ActivatedStatusEnum.ACTIVATED){
             // TODO: fork orkestrator for EYCA activation
           }
-          return TE.right(doNothing);
+          return TE.right(ActivityResultSuccess.encode({kind: "SUCCESS"}));
         }),
-
-        TE.map(_ => ActivityResultSuccess.encode({kind: "SUCCESS"})),
-
-          TE.orElse(failure => pipe(
-            // TODO: timer
-            TE.of(doNothing),
-            TE.chain(() => 
-              TE.tryCatch(
-                () => SendMessageActivity({
-                  checkProfile: false,
-                  content: getErrorMessage(),
-                  fiscalCode
-                }),
-                () => failure
-              )
-            ),
-            TE.chain(__ => TE.left(failure))
+        TE.chainW(success => pipe(
+          TE.tryCatch(() => workflow.condition(() => !isBlocked, 60000), E.toError),
+          TE.filterOrElseW(identity, () => "send mesaage"),
+          TE.orElseW(() => 
+            TE.tryCatch(
+              () => SendMessageActivity({
+                checkProfile: false,
+                content: getMessage(newStatusCard),
+                fiscalCode
+              }),
+              () => ({kind: "FAILURE" as const, reason: "SEND ERROR"})
+            )
           )
         )
-      )
-    ),
+      ),
+      TE.orElse(failure => pipe(
+          TE.tryCatch(() => workflow.condition(() => !isBlocked, 60000), E.toError),
+          TE.filterOrElseW(identity, () => "send mesaage"),
+          TE.orElseW(() => 
+            TE.tryCatch(
+              () => SendMessageActivity({
+                checkProfile: false,
+                content: getErrorMessage(),
+                fiscalCode
+              }),
+              () => failure
+            )
+          ),
+          TE.orElseW(__ => TE.left(failure))
+        )
+      ),
+      TE.map(_ => ActivityResultSuccess.encode({kind: "SUCCESS"}))
+    )
+  ),
     
     TE.toUnion
   );

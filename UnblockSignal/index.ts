@@ -9,7 +9,7 @@ import { FiscalCode, NonEmptyString } from "@pagopa/ts-commons/lib/strings";
 import { UpdateCgnOrchestrator } from "../temporal/workflows";
 import run from "../temporal/worker";
 import { getConfigOrThrow } from "../utils/config";
-import { OrchestratorInput } from "../UpdateCgnOrchestratorT";
+import { OrchestratorInput, unblockSignal } from "../UpdateCgnOrchestratorT";
 import { StatusEnum as PendingStatusEnum } from "../generated/definitions/CardPending";
 import { StatusEnum as ActivatedStatusEnum } from "../generated/definitions/CardActivated";
 import { cosmosdbClient } from "../utils/cosmosdb";
@@ -24,11 +24,11 @@ const config = getConfigOrThrow();
 const app = express();
 secureExpressApp(app);
 
-const userCgnsContainer = cosmosdbClient
-  .database(config.COSMOSDB_CGN_DATABASE_NAME)
-  .container(USER_CGN_COLLECTION_NAME);
+// const userCgnsContainer = cosmosdbClient
+//   .database(config.COSMOSDB_CGN_DATABASE_NAME)
+//   .container(USER_CGN_COLLECTION_NAME);
 
-const userCgnModel = new UserCgnModel(userCgnsContainer);
+// const userCgnModel = new UserCgnModel(userCgnsContainer);
 
 // eslint-disable-next-line prefer-arrow/prefer-arrow-functions
 function requiredEnv(name: string): string {
@@ -40,7 +40,7 @@ function requiredEnv(name: string): string {
 }
 
 // Add express route
-app.get("/api/v1/cgn/start", async (_req, res) => {
+app.get("/api/v1/cgn/unblock", async (_req, res) => {
   const connection = new Connection({
     address: requiredEnv("TEMPORAL_ADDRESS")
   });
@@ -51,61 +51,21 @@ app.get("/api/v1/cgn/start", async (_req, res) => {
 
   const fiscalCode = "DCPMNL86A24H501I" as FiscalCode;
 
-  const cgnExpirationDateOrError = await extractCgnExpirationDate(
+  const orchestratorId = makeUpdateCgnOrchestratorId(
     fiscalCode,
-    config.CGN_UPPER_BOUND_AGE
-  )();
-  if (E.isLeft(cgnExpirationDateOrError)) {
-    return cgnExpirationDateOrError.left;
-  }
-
-  const input: OrchestratorInput = {
-    fiscalCode,
-    newStatusCard: {
-      activation_date: new Date(),
-      expiration_date: cgnExpirationDateOrError.right,
-      status: ActivatedStatusEnum.ACTIVATED
-    }
-  };
+    ActivatedStatusEnum.ACTIVATED
+  ) as NonEmptyString;
 
   try {
-    const cgnId = await genRandomCardCode();
-
-    const orchestratorId = makeUpdateCgnOrchestratorId(
-      fiscalCode,
-      ActivatedStatusEnum.ACTIVATED
-    ) as NonEmptyString;
-    //  await run();
-    const upsertResult = await userCgnModel.upsert({
-      card: { status: PendingStatusEnum.PENDING },
-      fiscalCode: input.fiscalCode,
-      id: cgnId,
-      kind: "INewUserCgn"
-    })();
-
-    if (E.isLeft(upsertResult)) {
-      res.send(upsertResult.left);
-      res.sendStatus(500);
-    }
-    const result = await client.execute(UpdateCgnOrchestrator, {
-      args: [input, config.EYCA_UPPER_BOUND_AGE],
-      taskQueue: requiredEnv("TEMPORAL_TASK_QUEUE"),
-      workflowId: orchestratorId
-    });
-
-    if (result instanceof Error) {
-      res.send(result.message);
-      res.sendStatus(500);
-    } else {
-      res.send("ok");
-      res.sendStatus(200);
-    }
-  } catch (e) {
-    console.error("++++", e);
-    res.send(e);
+    const handle = client.getHandle(orchestratorId);
+    await handle.signal(unblockSignal);
+  } catch (err) {
+    res.send("KO: " + JSON.stringify(err));
     res.sendStatus(500);
   }
 
+  res.send("OK");
+  res.sendStatus(200);
   res.end();
 });
 
